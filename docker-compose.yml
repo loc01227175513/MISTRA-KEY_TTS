@@ -1,0 +1,10 @@
+services:
+  backend:
+    image: ${DOCKER_USERNAME}/mistra-tts-backend:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    environment:
+      - PORT=8000
+    ports:
+      - "8000:8000"

@@ -1,0 +1,70 @@
+name: deploy
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    env:
+      SSH_HOST: 3.25.169.182
+      SSH_USER: ubuntu
+      SSH_KEY: ${{ secrets.SSH_KEY }}
+      NEXT_PUBLIC_AUDIO_API_URL: http://3.25.169.182:8000/tts
+      DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+      DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+      GITHUB_REPO_URL: git@github.com:loc01227175513/TEXT-TO-SPEACH.git
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Docker login
+        run: echo "$DOCKER_PASSWORD" | docker login -u "$DOCKER_USERNAME" --password-stdin
+
+      - name: Build & push backend image
+        run: |
+          docker build -t "$DOCKER_USERNAME/mistra-tts-backend:latest" -f Dockerfile.backend .
+          docker push "$DOCKER_USERNAME/mistra-tts-backend:latest"
+
+      - name: Setup SSH key
+        run: |
+          install -m 700 -d ~/.ssh
+          echo "$SSH_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts
+
+      - name: Deploy via SSH
+        run: |
+          ssh -tt -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no "$SSH_USER@$SSH_HOST" \
+            DOCKER_USERNAME="$DOCKER_USERNAME" \
+            DOCKER_PASSWORD="$DOCKER_PASSWORD" \
+            NEXT_PUBLIC_AUDIO_API_URL="$NEXT_PUBLIC_AUDIO_API_URL" \
+            'bash -s' <<'EOF'
+            set -e
+
+            TARGET_DIR="/home/ubuntu/TEXT-TO-SPEACH"
+            REPO_URL="git@github.com:loc01227175513/TEXT-TO-SPEACH.git"
+
+            if [ ! -d "$TARGET_DIR/.git" ]; then
+              rm -rf "$TARGET_DIR"
+              git clone "$REPO_URL" "$TARGET_DIR"
+            fi
+
+            cd "$TARGET_DIR"
+
+            git reset --hard HEAD
+            git clean -fd
+            git pull origin main
+
+            echo "$DOCKER_PASSWORD" | docker login -u "$DOCKER_USERNAME" --password-stdin
+
+            docker compose pull
+            docker compose up -d --no-build
+          EOF
