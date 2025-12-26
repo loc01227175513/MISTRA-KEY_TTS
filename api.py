@@ -36,7 +36,7 @@ import numpy as np
 load_dotenv()
 
 # Lấy API keys
-API_KEY = os.getenv("MISTRAL_API_KEY") or "O3EI2wp2X2MekBLookmnOanLA9UohV9Z"
+API_KEY = os.getenv("MISTRAL_API_KEY") or "your-mistral-api-key"
 
 # Tạo thư mục để lưu file âm thanh
 AUDIO_DIR = Path("audio_files")

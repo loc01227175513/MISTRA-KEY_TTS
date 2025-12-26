@@ -17,16 +17,7 @@ venv\Scripts\activate  # Trên Windows
 pip install -r requirements.txt
 ```
 
-3. **Cấu hình API Key:**
-API key đã được cấu hình sẵn trong code. Nếu muốn sử dụng biến môi trường, tạo file `.env`:
-```
-MISTRAL_API_KEY=O3EI2wp2X2MekBLookmnOanLA9UohV9Z
-```
 
-Hoặc export biến môi trường:
-```bash
-export MISTRAL_API_KEY=O3EI2wp2X2MekBLookmnOanLA9UohV9Z
-```
 
 ## Sử dụng
 
