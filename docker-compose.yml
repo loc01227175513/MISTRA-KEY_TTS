@@ -1,6 +1,5 @@
 services:
   backend:
-    image: ${DOCKER_USERNAME}/tts-backend:latest
     build:
       context: .
       dockerfile: Dockerfile.backend
