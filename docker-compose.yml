@@ -1,6 +1,6 @@
 services:
   backend:
-    image: ${DOCKER_USERNAME}/mistra-tts-backend:latest
+    image: ${DOCKER_USERNAME}/tts-backend:latest
     build:
       context: .
       dockerfile: Dockerfile.backend

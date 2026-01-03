@@ -1,22 +1,17 @@
 #!/usr/bin/env python3
 """
-Mistral TTS API Server
-REST API để sử dụng Mistral AI TTS
+TTS API Server
+REST API để tạo audio với kokoro-tts
 """
 
 import os
-import asyncio
 import uuid
 import subprocess
 from typing import Optional
 from pathlib import Path
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse, FileResponse
 from pydantic import BaseModel
-from dotenv import load_dotenv
-from mistralai import Mistral
-import io
-import json
 import tempfile
 
 # Import pydub với fallback
@@ -30,109 +25,16 @@ except ImportError as e:
     AudioSegment = None
     normalize = None
 
-import numpy as np
-
-# Load environment variables
-load_dotenv()
-
-# Lấy API keys
-API_KEY = os.getenv("MISTRAL_API_KEY") or "your-mistral-api-key"
-
 # Tạo thư mục để lưu file âm thanh
 AUDIO_DIR = Path("audio_files")
 AUDIO_DIR.mkdir(exist_ok=True)
 
 # Khởi tạo FastAPI app
 app = FastAPI(
-    title="Mistral TTS API",
-    description="API để sử dụng Mistral AI Text-to-Speech với file âm thanh",
+    title="Kokoro TTS API",
+    description="API để tạo audio từ text với kokoro-tts",
     version="1.0.0"
 )
-
-# Khởi tạo Mistral client
-try:
-    mistral_client = Mistral(api_key=API_KEY)
-except Exception as e:
-    print(f"Lỗi khi khởi tạo Mistral client: {e}")
-    mistral_client = None
-
-
-# Hàm sử dụng Mistral để phân tích text và đề xuất pitch adjustment
-async def analyze_pitch_with_mistral(text: str, lang: str = "en") -> float:
-    """
-    Sử dụng Mistral AI CHỈ để phân tích text và đề xuất hệ số điều chỉnh pitch tối ưu
-    
-    Hàm này CHỈ phân tích pitch, không xử lý hay thay đổi text.
-    Text được dùng trực tiếp cho gTTS sau khi có pitch factor.
-    
-    Args:
-        text: Text gốc cần phân tích pitch (text này sẽ được dùng cho kokoro-tts)
-        lang: Ngôn ngữ của text
-    
-    Returns:
-        Hệ số pitch (1.0 = bình thường, >1.0 = cao hơn, <1.0 = thấp hơn)
-    """
-    if mistral_client is None:
-        return 1.0  # Trả về pitch mặc định nếu không có Mistral client
-    
-    try:
-        prompt = f"""Phân tích đoạn text sau và đề xuất hệ số điều chỉnh cao độ (pitch) tối ưu cho phát âm:
-Text: "{text}"
-Ngôn ngữ: {lang}
-
-Hãy phân tích:
-1. Loại nội dung (câu hỏi, câu khẳng định, câu cảm thán, v.v.)
-2. Cảm xúc (vui, buồn, nghiêm túc, v.v.)
-3. Độ dài và độ phức tạp
-4. Đề xuất hệ số pitch (từ 0.8 đến 1.2, với 1.0 là bình thường)
-
-Trả về JSON với format:
-{{
-    "pitch_factor": <số thực từ 0.8 đến 1.2>,
-    "reasoning": "<lý do>"
-}}"""
-        
-        response = mistral_client.chat.complete(
-            model="mistral-small-latest",
-            messages=[
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.3,
-            max_tokens=200
-        )
-        
-        result_text = response.choices[0].message.content
-        
-        # Cố gắng parse JSON từ response
-        try:
-            # Tìm JSON trong response
-            if "{" in result_text and "}" in result_text:
-                json_start = result_text.find("{")
-                json_end = result_text.rfind("}") + 1
-                json_str = result_text[json_start:json_end]
-                result = json.loads(json_str)
-                pitch_factor = float(result.get("pitch_factor", 1.0))
-                # Giới hạn pitch factor trong khoảng hợp lý
-                return max(0.7, min(1.3, pitch_factor))
-        except (json.JSONDecodeError, ValueError, KeyError):
-            pass
-        
-        # Nếu không parse được, sử dụng heuristic đơn giản
-        # Câu hỏi thường cần pitch cao hơn một chút
-        if "?" in text:
-            return 1.05
-        # Câu cảm thán cần pitch cao hơn
-        elif "!" in text:
-            return 1.1
-        # Text dài có thể cần pitch thấp hơn một chút
-        elif len(text) > 100:
-            return 0.95
-        else:
-            return 1.0
-            
-    except Exception as e:
-        print(f"Lỗi khi phân tích pitch với Mistral: {e}")
-        return 1.0
 
 
 # Hàm điều chỉnh pitch của audio
@@ -171,20 +73,15 @@ def adjust_audio_pitch(audio, pitch_factor: float):
 async def create_audio_with_optimized_pitch(
     text: str,
     lang: str = "en",
-    pitch_factor: Optional[float] = None,
-    use_mistral: bool = True
+    pitch_factor: Optional[float] = None
 ) -> tuple[str, Optional[float]]:
     """
-    Tạo audio từ text sử dụng kokoro-tts và điều chỉnh pitch dựa trên Mistral
-    
-    Lưu ý: Mistral CHỈ dùng để phân tích pitch từ text gốc, không xử lý text.
-    kokoro-tts luôn dùng text gốc để tạo audio.
+    Tạo audio từ text sử dụng kokoro-tts và (tuỳ chọn) điều chỉnh pitch.
     
     Args:
         text: Text gốc cần chuyển đổi (luôn dùng text này cho kokoro-tts)
         lang: Ngôn ngữ (kokoro-tts hỗ trợ nhiều ngôn ngữ)
-        pitch_factor: Hệ số pitch (nếu None sẽ dùng Mistral để tính từ text gốc)
-        use_mistral: Có sử dụng Mistral để phân tích pitch không
+        pitch_factor: Hệ số pitch (nếu None sẽ dùng mặc định 1.0)
     
     Returns:
         Tuple (file_path, pitch_factor_used)
@@ -253,14 +150,9 @@ async def create_audio_with_optimized_pitch(
             if os.path.exists(temp_txt.name):
                 os.unlink(temp_txt.name)
         
-        # Điều chỉnh pitch nếu cần - Mistral CHỈ dùng để phân tích pitch từ text gốc
-        print(f"DEBUG: pitch_factor={pitch_factor}, use_mistral={use_mistral}")
-        if pitch_factor is None and use_mistral:
-            print(f"DEBUG: Gọi Mistral để phân tích pitch cho text: {text[:50]}...")
-            pitch_factor = await analyze_pitch_with_mistral(text, lang)
-            print(f"DEBUG: Mistral trả về pitch_factor: {pitch_factor}")
-        elif pitch_factor is None:
-            print(f"DEBUG: Không gọi Mistral (use_mistral={use_mistral}), dùng pitch mặc định 1.0")
+        # Điều chỉnh pitch nếu cần
+        print(f"DEBUG: pitch_factor={pitch_factor}")
+        if pitch_factor is None:
             pitch_factor = 1.0
         
         if pitch_factor is None:
@@ -316,37 +208,22 @@ async def create_audio_with_optimized_pitch(
 # Request models
 class TTSRequest(BaseModel):
     text: str
-    model: Optional[str] = "mistral-small-latest"
-    temperature: Optional[float] = 0.7
-    max_tokens: Optional[int] = 1000
     lang: Optional[str] = "en"  # Ngôn ngữ (en = tiếng Anh)
-    use_mistral: Optional[bool] = False  # Sử dụng Mistral để xử lý text (mặc định: false - chỉ dùng cho pitch)
     return_audio: Optional[bool] = False  # Trả về file âm thanh hay JSON (mặc định: false)
-    optimize_pitch: Optional[bool] = True  # Sử dụng Mistral để phân tích và tối ưu hóa pitch (mặc định: true)
-    pitch_factor: Optional[float] = None  # Hệ số điều chỉnh pitch (nếu None sẽ dùng Mistral để tính từ text gốc)
-
-
-class ChatRequest(BaseModel):
-    message: str
-    model: Optional[str] = "mistral-small-latest"
-    temperature: Optional[float] = 0.7
-    max_tokens: Optional[int] = 1000
+    pitch_factor: Optional[float] = None  # Hệ số điều chỉnh pitch (mặc định 1.0 nếu None)
 
 
 @app.get("/")
 async def root():
     """Root endpoint - API information"""
     return {
-        "name": "Mistral TTS API",
+        "name": "Kokoro TTS API",
         "version": "1.0.0",
         "status": "running",
         "endpoints": {
             "health": "/health",
             "tts": "/api/v1/tts",
             "tts_audio": "/api/v1/tts/audio",
-            "tts_mistral": "/api/v1/tts/mistral",
-            "chat": "/api/v1/chat",
-            "models": "/api/v1/models",
             "languages": "/api/v1/languages",
             "docs": "/docs"
         }
@@ -356,12 +233,7 @@ async def root():
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
-    if mistral_client is None:
-        return JSONResponse(
-            status_code=503,
-            content={"status": "error", "message": "Mistral client không được khởi tạo"}
-        )
-    return {"status": "healthy", "api_key_configured": bool(API_KEY)}
+    return {"status": "healthy"}
 
 
 
@@ -369,17 +241,13 @@ async def health_check():
 @app.post("/api/v1/tts")
 async def text_to_speech(request: TTSRequest):
     """
-    Tạo audio từ text với kokoro-tts, sử dụng Mistral AI CHỈ để phân tích và điều chỉnh pitch
-    
-    - kokoro-tts luôn dùng text gốc (request.text) để tạo audio
-    - Mistral chỉ dùng để phân tích pitch từ text gốc (nếu optimize_pitch=True)
-    - use_mistral chỉ dùng để xử lý text (không ảnh hưởng đến audio)
+    Tạo audio từ text với kokoro-tts.
     
     Args:
         request: TTSRequest chứa text và các tham số
     
     Returns:
-        JSON response với text đã xử lý (nếu use_mistral=True) và audio file (nếu return_audio=True)
+        JSON response và audio file (nếu return_audio=True)
     """
     if not request.text:
         raise HTTPException(status_code=400, detail="Text không được để trống")
@@ -387,36 +255,10 @@ async def text_to_speech(request: TTSRequest):
     print(f"DEBUG: request.return_audio = {request.return_audio}, type = {type(request.return_audio)}")
     
     try:
-        text_to_convert = request.text
-        mistral_usage = None
         audio_filename = None
         pitch_factor_used = None
         
-        # Sử dụng Mistral để xử lý text
-        if request.use_mistral:
-            if mistral_client is None:
-                raise HTTPException(status_code=503, detail="Mistral client chưa được khởi tạo")
-            
-            # Gọi Mistral API để xử lý text
-            response = mistral_client.chat.complete(
-                model=request.model,
-                messages=[
-                    {"role": "user", "content": request.text}
-                ],
-                temperature=request.temperature,
-                max_tokens=request.max_tokens
-            )
-            
-            # Lấy text từ response
-            text_to_convert = response.choices[0].message.content
-            mistral_usage = {
-                "prompt_tokens": response.usage.prompt_tokens,
-                "completion_tokens": response.usage.completion_tokens,
-                "total_tokens": response.usage.total_tokens
-            }
-        
         # Tạo audio nếu được yêu cầu
-        # LUÔN dùng text gốc để tạo audio, Mistral chỉ dùng để phân tích pitch
         audio_filename = None
         pitch_factor_used = None
         if request.return_audio:
@@ -425,8 +267,7 @@ async def text_to_speech(request: TTSRequest):
                 audio_filename, pitch_factor_used = await create_audio_with_optimized_pitch(
                     text=request.text,  # Luôn dùng text gốc, không dùng processed_text
                     lang=request.lang,
-                    pitch_factor=request.pitch_factor,
-                    use_mistral=request.optimize_pitch  # Mistral chỉ dùng để phân tích pitch
+                    pitch_factor=request.pitch_factor
                 )
                 print(f"DEBUG: Audio created successfully: {audio_filename}, pitch: {pitch_factor_used}")
             except Exception as e:
@@ -443,9 +284,9 @@ async def text_to_speech(request: TTSRequest):
         result = {
             "success": True,
             "text": request.text,
-            "processed_text": text_to_convert if request.use_mistral else request.text,
+            "processed_text": request.text,
             "lang": request.lang,
-            "usage": mistral_usage,
+            "usage": None,
             "audio_file": audio_filename if request.return_audio and audio_filename else None,
             "audio_url": f"/api/v1/audio/{audio_filename}" if audio_filename else None,
             "pitch_factor": pitch_factor_used
@@ -458,65 +299,10 @@ async def text_to_speech(request: TTSRequest):
         raise HTTPException(status_code=500, detail=f"Lỗi khi xử lý: {str(e)}")
 
 
-@app.post("/api/v1/tts/mistral")
-async def text_to_speech_mistral(request: TTSRequest):
-    """
-    Sử dụng Mistral AI để xử lý text
-    Endpoint đơn giản để sử dụng Mistral
-    
-    Args:
-        request: TTSRequest chứa text và các tham số
-    
-    Returns:
-        JSON response với text đã xử lý
-    """
-    if mistral_client is None:
-        raise HTTPException(status_code=503, detail="Mistral client chưa được khởi tạo")
-    
-    if not request.text:
-        raise HTTPException(status_code=400, detail="Text không được để trống")
-    
-    try:
-        # Gọi Mistral API để xử lý text
-        response = mistral_client.chat.complete(
-            model=request.model,
-            messages=[
-                {"role": "user", "content": request.text}
-            ],
-            temperature=request.temperature,
-            max_tokens=request.max_tokens
-        )
-        
-        # Lấy text từ response
-        processed_text = response.choices[0].message.content
-        
-        # Trả về JSON với thông tin đầy đủ
-        return {
-            "success": True,
-            "model": response.model,
-            "original_text": request.text,
-            "processed_text": processed_text,
-            "lang": request.lang,
-            "usage": {
-                "prompt_tokens": response.usage.prompt_tokens,
-                "completion_tokens": response.usage.completion_tokens,
-                "total_tokens": response.usage.total_tokens
-            }
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Lỗi khi xử lý: {str(e)}")
-
-
-
-
 @app.post("/api/v1/tts/audio")
 async def text_to_speech_audio(request: TTSRequest):
     """
-    Tạo audio từ text với gTTS, sử dụng Mistral AI CHỈ để phân tích và điều chỉnh pitch
-    
-    - gTTS luôn dùng text gốc (request.text) để tạo audio
-    - Mistral chỉ dùng để phân tích pitch từ text gốc (nếu optimize_pitch=True)
-    - Trả về file audio trực tiếp
+    Tạo audio từ text với kokoro-tts và trả về file audio trực tiếp.
     
     Args:
         request: TTSRequest chứa text và các tham số
@@ -528,37 +314,11 @@ async def text_to_speech_audio(request: TTSRequest):
         raise HTTPException(status_code=400, detail="Text không được để trống")
     
     try:
-        text_to_convert = request.text
-        mistral_usage = None
-        
-        # Sử dụng Mistral để xử lý text nếu được yêu cầu (chỉ cho text processing, không ảnh hưởng audio)
-        if request.use_mistral:
-            if mistral_client is None:
-                raise HTTPException(status_code=503, detail="Mistral client chưa được khởi tạo")
-            
-            response = mistral_client.chat.complete(
-                model=request.model,
-                messages=[
-                    {"role": "user", "content": request.text}
-                ],
-                temperature=request.temperature,
-                max_tokens=request.max_tokens
-            )
-            
-            text_to_convert = response.choices[0].message.content
-            mistral_usage = {
-                "prompt_tokens": response.usage.prompt_tokens,
-                "completion_tokens": response.usage.completion_tokens,
-                "total_tokens": response.usage.total_tokens
-            }
-        
-        # Tạo audio với pitch được tối ưu
-        # LUÔN dùng text gốc để tạo audio, Mistral chỉ dùng để phân tích pitch
+        # Tạo audio
         audio_filename, pitch_factor_used = await create_audio_with_optimized_pitch(
             text=request.text,  # Luôn dùng text gốc, không dùng processed_text
             lang=request.lang,
-            pitch_factor=request.pitch_factor,
-            use_mistral=request.optimize_pitch  # Mistral chỉ dùng để phân tích pitch
+            pitch_factor=request.pitch_factor
         )
         
         audio_path = AUDIO_DIR / audio_filename
@@ -569,7 +329,7 @@ async def text_to_speech_audio(request: TTSRequest):
             media_type="audio/mpeg",
             headers={
                 "X-Original-Text": request.text,
-                "X-Processed-Text": text_to_convert,
+                "X-Processed-Text": request.text,
                 "X-Pitch-Factor": str(pitch_factor_used),
                 "X-Audio-Filename": audio_filename
             }
@@ -606,7 +366,7 @@ async def list_languages():
         Danh sách ngôn ngữ
     """
     languages = [
-        {"code": "en", "name": "English", "engines": ["mistral"]},
+        {"code": "en", "name": "English", "engines": ["kokoro-tts"]},
     ]
     
     return {
@@ -614,75 +374,6 @@ async def list_languages():
         "count": len(languages),
         "languages": languages
     }
-
-
-
-
-
-
-@app.post("/api/v1/chat")
-async def chat(request: ChatRequest):
-    """
-    Chat với Mistral AI
-    
-    Args:
-        request: ChatRequest chứa message và các tham số
-    
-    Returns:
-        Response từ Mistral API
-    """
-    if mistral_client is None:
-        raise HTTPException(status_code=503, detail="Mistral client chưa được khởi tạo")
-    
-    if not request.message:
-        raise HTTPException(status_code=400, detail="Message không được để trống")
-    
-    try:
-        response = mistral_client.chat.complete(
-            model=request.model,
-            messages=[
-                {"role": "user", "content": request.message}
-            ],
-            temperature=request.temperature,
-            max_tokens=request.max_tokens
-        )
-        
-        return {
-            "success": True,
-            "model": response.model,
-            "message": request.message,
-            "response": response.choices[0].message.content,
-            "usage": {
-                "prompt_tokens": response.usage.prompt_tokens,
-                "completion_tokens": response.usage.completion_tokens,
-                "total_tokens": response.usage.total_tokens
-            }
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Lỗi khi gọi Mistral API: {str(e)}")
-
-
-@app.get("/api/v1/models")
-async def list_models():
-    """
-    Liệt kê các models có sẵn
-    
-    Returns:
-        Danh sách models
-    """
-    if mistral_client is None:
-        raise HTTPException(status_code=503, detail="Mistral client chưa được khởi tạo")
-    
-    try:
-        models = mistral_client.models.list()
-        return {
-            "success": True,
-            "count": len(models.data),
-            "models": [{"id": model.id, "object": model.object} for model in models.data]
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Lỗi khi lấy danh sách models: {str(e)}")
-
 
 if __name__ == "__main__":
     import uvicorn
