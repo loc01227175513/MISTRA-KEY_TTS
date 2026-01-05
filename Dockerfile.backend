@@ -8,6 +8,7 @@ ENV PYTHONUNBUFFERED=1
 # Install system dependencies required by audio stack
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
+    portaudio19-dev \
     wget \
     && rm -rf /var/lib/apt/lists/*
 
@@ -17,6 +18,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application source
 COPY . .
+
+# Download required kokoro-tts model assets (so audio generation works out-of-the-box)
+RUN wget -q -O kokoro-v1.0.onnx https://github.com/nazdridoy/kokoro-tts/releases/download/v1.0.0/kokoro-v1.0.onnx \
+    && wget -q -O voices-v1.0.bin https://github.com/nazdridoy/kokoro-tts/releases/download/v1.0.0/voices-v1.0.bin
 
 EXPOSE 8000
 
