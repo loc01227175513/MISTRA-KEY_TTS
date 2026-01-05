@@ -11,6 +11,7 @@ from typing import Optional
 from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse, FileResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import tempfile
 
@@ -35,6 +36,30 @@ app = FastAPI(
     description="API để tạo audio từ text với kokoro-tts",
     version="1.0.0"
 )
+
+# CORS: cho phép mọi domain (phù hợp nhu cầu public API)
+# Lưu ý: nếu cần gửi cookie/Authorization credentials từ browser, cần cấu hình cụ thể origin
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=[
+        "X-Original-Text",
+        "X-Processed-Text",
+        "X-Pitch-Factor",
+        "X-Audio-Filename",
+    ],
+)
+
+
+@app.middleware("http")
+async def add_security_headers(request, call_next):
+    response = await call_next(request)
+    # Theo yêu cầu: Referrer Policy
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    return response
 
 
 # Hàm điều chỉnh pitch của audio
